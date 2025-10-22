@@ -1,0 +1,59 @@
+{
+  "info": {
+    "name": "IG TV Webhook",
+    "_postman_id": "dummy-id-1234",
+    "description": "Simple POST to /webhook with header X-Webhook-Secret",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "POST /webhook",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Webhook-Secret",
+            "value": "{{WEBHOOK_SECRET}}"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/webhook",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "webhook"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"epic\": \"CS.D.EURUSD.MINI.IP\",\n  \"direction\": \"BUY\",\n  \"size\": 1,\n  \"order_type\": \"MARKET\",\n  \"alert_id\": \"{{alert_id}}\",\n  \"ts\": {{timestamp}}\n}"
+        }
+      },
+      "response": []
+    }
+  ],
+  "event": [],
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "https://your-service.onrender.com"
+    },
+    {
+      "key": "WEBHOOK_SECRET",
+      "value": "changeme"
+    },
+    {
+      "key": "alert_id",
+      "value": "manual-test"
+    },
+    {
+      "key": "timestamp",
+      "value": "1730000000"
+    }
+  ]
+}

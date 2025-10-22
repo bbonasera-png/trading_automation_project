@@ -1,0 +1,17 @@
+{
+  "epic": "IX.D.FTSE.IFE.IP",
+  "direction": "BUY",
+  "size": 1,
+  "order_type": "MARKET",
+  "currency_code": "GBP",
+  "expiry": "-",
+  "force_open": true,
+  "level": null,
+  "limit_distance": null,
+  "limit_level": null,
+  "quote_id": null,
+  "stop_distance": null,
+  "stop_level": null,
+  "trailing_stop": false,
+  "trailing_stop_increment": null
+}

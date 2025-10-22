@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: ig-tv-webhook
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: IG_USERNAME
+        sync: false
+      - key: IG_PASSWORD
+        sync: false
+      - key: IG_API_KEY
+        sync: false
+      - key: IG_ACC_TYPE
+        value: DEMO
+      - key: WEBHOOK_SECRET
+        sync: false
+    healthCheckPath: /health
