@@ -3,7 +3,6 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 import os
 from ig_trading import place_order  # riusa la tua funzione
-# opzionale: semplice deduplicatore in memoria
 from time import time
 
 load_dotenv()
@@ -38,16 +37,22 @@ def health():
 
 @app.post("/webhook")
 def webhook():
-    # semplice segreto via header
-    if WEBHOOK_SECRET and request.headers.get("X-Webhook-Secret") != WEBHOOK_SECRET:
-        return jsonify({"status": "error", "message": "unauthorized"}), 401
+    # --- Verifica del segreto (da header o da body JSON) ---
+    req_json = request.get_json(silent=True) or {}
+    header_secret = request.headers.get("X-Webhook-Secret")
+    body_secret = req_json.get("secret")
 
+    if WEBHOOK_SECRET:
+        if header_secret != WEBHOOK_SECRET and body_secret != WEBHOOK_SECRET:
+            return jsonify({"status": "error", "message": "unauthorized"}), 401
+
+    # Validazione payload
     try:
-        payload = AlertPayload.model_validate(request.json or {})
+        payload = AlertPayload.model_validate(req_json)
     except ValidationError as ve:
         return jsonify({"status": "error", "message": ve.errors()}), 400
 
-    # idempotenza best-effort
+    # Idempotenza best-effort
     if payload.alert_id:
         now = time()
         last = _recent_ids.get(payload.alert_id)
@@ -55,6 +60,7 @@ def webhook():
             return jsonify({"status": "ok", "message": "duplicate ignored"}), 200
         _recent_ids[payload.alert_id] = now
 
+    # Invio ordine a IG
     try:
         resp = place_order(payload.model_dump(exclude_none=True))
         return jsonify({"status": "success", "response": resp}), 200
