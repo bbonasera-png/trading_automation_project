@@ -1,90 +1,79 @@
-from pydantic import BaseModel, Field, ValidationError
-from flask import Flask, request, jsonify
-from dotenv import load_dotenv
+# app.py
+from __future__ import annotations
+
 import os
-from time import time
-from ig_trading import place_order  # riusa la tua funzione
+from flask import Flask, request, jsonify
+from ig_trading import place_order  # riusa la tua funzione IG
+import traceback
 
-load_dotenv()
 app = Flask(__name__)
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
-class AlertPayload(BaseModel):
-    epic: str
-    direction: str | None = Field(default=None, pattern="^(BUY|SELL)$")  # richiesto solo per OPEN
-    size: float = 1
-    order_type: str = Field(default="MARKET", pattern="^(MARKET|LIMIT)$")
-    # opzionali IG
-    currency_code: str | None = None
-    expiry: str | None = None
-    level: float | None = None
-    limit_distance: float | None = None
-    limit_level: float | None = None
-    stop_distance: float | None = None
-    stop_level: float | None = None
-    trailing_stop: bool | None = None
-    trailing_stop_increment: float | None = None
-    # controllo flusso
-    action: str = Field(default="OPEN", pattern="^(OPEN|CLOSE_LONG|CLOSE_SHORT)$")
-    # meta
-    alert_id: str | None = None
-    ts: float | None = None
-    secret: str | None = None  # per chi usa il secret nel body
+# ========= CONFIG =========
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
-_recent_ids: dict[str, float] = {}
+# ========= ROOT =========
+@app.route("/")
+def index():
+    return jsonify({"status": "ok", "service": "TradingView → IG Bridge"}), 200
 
-@app.get("/health")
+
+# ========= HEALTH CHECK =========
+@app.route("/health")
 def health():
-    return {"ok": True}, 200
+    return jsonify({"ok": True}), 200
 
-@app.post("/webhook")
+
+# ========= WEBHOOK =========
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    req_json = request.get_json(silent=True) or {}
+    try:
+        data = request.get_json(force=True, silent=False)
+    except Exception:
+        return jsonify({"status": "error", "message": "invalid json"}), 400
 
-    # segreto: header o body
+    # --- Autenticazione ---
     header_secret = request.headers.get("X-Webhook-Secret")
-    body_secret = req_json.get("secret")
-    if WEBHOOK_SECRET:
-        if header_secret != WEBHOOK_SECRET and body_secret != WEBHOOK_SECRET:
-            return jsonify({"status": "error", "message": "unauthorized"}), 401
+    body_secret = data.get("secret") if isinstance(data, dict) else None
+    if WEBHOOK_SECRET and (header_secret != WEBHOOK_SECRET and body_secret != WEBHOOK_SECRET):
+        return jsonify({"status": "error", "message": "unauthorized"}), 401
 
-    # validazione
+    # --- Logica ordine ---
     try:
-        payload = AlertPayload.model_validate(req_json)
-    except ValidationError as ve:
-        return jsonify({"status": "error", "message": ve.errors()}), 400
-
-    # idempotenza semplice
-    if payload.alert_id:
-        now = time()
-        last = _recent_ids.get(payload.alert_id)
-        if last and now - last < 600:
-            return jsonify({"status": "ok", "message": "duplicate ignored"}), 200
-        _recent_ids[payload.alert_id] = now
-
-    try:
-        # routing: OPEN vs CLOSE
-        data = payload.model_dump(exclude_none=True)
-
-        if payload.action == "OPEN":
-            resp = place_order(data)  # come già fai ora
-        else:
-            # CLOSE_LONG -> invia SELL con force_open=False
-            # CLOSE_SHORT -> invia BUY  con force_open=False
-            close_dir = "SELL" if payload.action == "CLOSE_LONG" else "BUY"
-            close_payload = {
-                "epic": payload.epic,
-                "direction": close_dir,
-                "size": payload.size,
-                "order_type": payload.order_type,
-                "force_open": False,        # <-- NETTING: chiude la posizione opposta
-                "currency_code": data.get("currency_code", "USD"),
-                "expiry": data.get("expiry", "-"),
-                # opzionali: puoi passare livello o distanze se vuoi una chiusura LIMIT
-            }
-            resp = place_order(close_payload)
-
-        return jsonify({"status": "success", "response": resp}), 200
-
+        response = place_order(data)
+        return jsonify({"response": response, "status": "success"}), 200
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "trace": traceback.format_exc()
+        }), 500
+
+
+# ========= TEST IG ENDPOINT =========
+APP_BUILD = "2025-10-23_IG_test_v1"
+
+@app.get("/__version")
+def __version():
+    return {"build": APP_BUILD}, 200
+
+
+@app.get("/test_ig")
+def test_ig():
+    header_secret = request.headers.get("X-Webhook-Secret")
+    qs_secret = request.args.get("secret")
+
+    if WEBHOOK_SECRET and (header_secret != WEBHOOK_SECRET and qs_secret != WEBHOOK_SECRET):
+        return jsonify({"status": "error", "message": "unauthorized"}), 401
+
+    try:
+        from ig_trading import test_connection
+        res = test_connection()
+        return (jsonify(res), 200) if res.get("ok") else (jsonify(res), 500)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ========= MAIN =========
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
