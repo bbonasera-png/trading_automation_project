@@ -1,18 +1,20 @@
 services:
   - type: web
-    name: ig-tv-webhook
-    runtime: python
+    name: ig-tv-wbhook
+    env: python
+    plan: free  # oppure starter, se vuoi maggiore uptime
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
     envVars:
-      - key: IG_USERNAME
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: WEBHOOK_SECRET
+        value: tv_ig_2025_secret!
+      - key: IG_API_KEY
+        sync: false
+      - key: IG_IDENTIFIER
         sync: false
       - key: IG_PASSWORD
         sync: false
-      - key: IG_API_KEY
+      - key: IG_ACCOUNT_ID
         sync: false
-      - key: IG_ACC_TYPE
-        value: DEMO
-      - key: WEBHOOK_SECRET
-        sync: false
-    healthCheckPath: /health
