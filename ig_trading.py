@@ -84,83 +84,153 @@ def _to_bool(x: Any, default: bool = False) -> bool:
 # ========= API principale =========
 def place_order(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Esegue un ordine su IG (apertura o chiusura) in modo dinamico,
-    adattandosi alla versione installata di trading-ig.
+    Apre/chiude ordini su IG e ritorna anche la deal confirmation (motivo REJECT/ACCEPT).
+    Per CLOSE_LONG/CLOSE_SHORT inviare: {"action":"CLOSE_LONG"} o {"action":"CLOSE_SHORT"}.
     """
     ig = _ensure_ig()
 
-    epic = _get(data, "epic")
+    action = (_get(data, "action", "OPEN") or "OPEN").upper()
+
+    # --- CLOSE handling (usa positions + close_working_order/close_position) ---
+    if action in {"CLOSE_LONG", "CLOSE_SHORT"}:
+        # chiusura semplificata: se hai una sola posizione su quell'epic, la chiude in senso opposto
+        epic = _get(data, "epic")
+        size = float(_get(data, "size", 1))
+        if not epic:
+            raise ValueError("Per CLOSE_* fornisci almeno 'epic'")
+
+        try:
+            # recupera posizioni aperte
+            pos = ig.fetch_open_positions()
+            body = pos.body if hasattr(pos, "body") else pos
+            positions = []
+            if isinstance(body, dict) and "positions" in body:
+                positions = body["positions"]
+
+            # trova posizione sull'EPIC richiesto
+            pos_on_epic = None
+            for p in positions:
+                instr = p.get("market", {})
+                deal = p.get("position", {})
+                if instr.get("epic") == epic:
+                    pos_on_epic = deal
+                    break
+
+            if not pos_on_epic:
+                return {"status": "error", "reason": f"no open position on epic {epic}"}
+
+            # direzione opposta per chiusura
+            current_dir = pos_on_epic.get("direction")
+            close_dir = "SELL" if current_dir == "BUY" else "BUY"
+
+            # chiude a MARKET
+            resp = ig.close_open_position(
+                deal_id=pos_on_epic.get("dealId"),
+                direction=close_dir,
+                epic=epic,
+                size=size,
+                order_type="MARKET",
+                level=None,
+                time_in_force=None,
+                limit_level=None,
+                stop_level=None
+            )
+
+            # conferma
+            body = resp.body if hasattr(resp, "body") else resp
+            deal_ref = body.get("dealReference") if isinstance(body, dict) else None
+            confirm_body = None
+            if deal_ref:
+                try:
+                    confirm = ig.fetch_deal_by_deal_reference(deal_ref)
+                    confirm_body = confirm.body if hasattr(confirm, "body") else confirm
+                except Exception:
+                    confirm_body = None
+
+            return {
+                "status": "success",
+                "raw": body,
+                "dealReference": deal_ref,
+                "confirm": confirm_body,
+            }
+        except Exception as e:
+            return {"status": "error", "error": e.__class__.__name__, "reason": str(e)}
+
+    # --- OPEN handling ---
+    epic       = _get(data, "epic")
     if not epic:
         raise ValueError("Missing 'epic'")
 
-    direction = (_get(data, "direction", "BUY") or "BUY").upper()
-    size = float(_get(data, "size", 1))
+    direction  = (_get(data, "direction") or "").upper()   # BUY/SELL
+    size       = float(_get(data, "size", 1))
     order_type = (_get(data, "order_type", "MARKET") or "MARKET").upper()
 
-    # parametri opzionali
-    expiry = _get(data, "expiry", "-")
-    force_open = _to_bool(_get(data, "force_open", True))
-    guaranteed_stop = _to_bool(_get(data, "guaranteed_stop", False))
-    level = _get(data, "level")
-    limit_distance = _get(data, "limit_distance")
-    limit_level = _get(data, "limit_level")
-    quote_id = _get(data, "quote_id")
-    stop_distance = _get(data, "stop_distance")
-    stop_level = _get(data, "stop_level")
-    trailing_stop = _to_bool(_get(data, "trailing_stop", False))
-    trailing_inc = _get(data, "trailing_stop_increment")
-    currency_code = _get(data, "currency_code", "EUR")
-    time_in_force = _get(data, "time_in_force")
-    good_till_date = _get(data, "good_till_date")
+    # opzionali
+    level              = _get(data, "level")
+    limit_distance     = _get(data, "limit_distance")
+    limit_level        = _get(data, "limit_level")
+    stop_distance      = _get(data, "stop_distance")
+    stop_level         = _get(data, "stop_level")
+    guaranteed_stop    = _to_bool(_get(data, "guaranteed_stop", False))
+    trailing_stop      = _to_bool(_get(data, "trailing_stop", False))
+    trailing_increment = _get(data, "trailing_stop_increment")
+    force_open         = _to_bool(_get(data, "force_open", True))
+    currency_code      = _get(data, "currency_code", "EUR")
+    expiry             = _get(data, "expiry", "-")
+    quote_id           = _get(data, "quote_id")
+    time_in_force      = _get(data, "time_in_force")
+    good_till_date     = _get(data, "good_till_date")
 
-    # === Costruzione dinamica ===
-    func = ig.create_open_position
-    sig = inspect.signature(func)
-    param_names = [p.name for p in sig.parameters.values()]
+    if order_type not in {"MARKET", "LIMIT"}:
+        raise ValueError("order_type must be 'MARKET' or 'LIMIT'")
+    if order_type == "LIMIT" and level is None:
+        raise ValueError("For LIMIT orders, 'level' is required")
 
-    # Mappa valori disponibili
-    value_map = {
-        "currency_code": currency_code,
-        "direction": direction,
+    kwargs = {
         "epic": epic,
         "expiry": expiry,
-        "force_open": force_open,
-        "guaranteed_stop": guaranteed_stop,
-        "level": level,
+        "direction": direction,
+        "size": size,
+        "order_type": order_type,
+        "level": level,  # None per MARKET
         "limit_distance": limit_distance,
         "limit_level": limit_level,
-        "order_type": order_type,
-        "quote_id": quote_id,
-        "size": size,
         "stop_distance": stop_distance,
         "stop_level": stop_level,
+        "guaranteed_stop": guaranteed_stop,
         "time_in_force": time_in_force,
         "good_till_date": good_till_date,
         "trailing_stop": trailing_stop,
-        "trailing_stop_increment": trailing_inc,
+        "trailing_stop_increment": trailing_increment,
+        "force_open": force_open,
+        "currency_code": currency_code,
+        "quote_id": quote_id,
     }
-
-    # Costruisci la lista degli argomenti nel giusto ordine, solo quelli supportati
-    args = [value_map.get(name, None) for name in param_names]
-
-    # Controllo base
-    if order_type == "LIMIT" and "level" in param_names and level is None:
-        raise ValueError("For LIMIT orders, 'level' is required")
+    clean_kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
-        resp = func(*args)
-        body = getattr(resp, "body", None) if hasattr(resp, "body") else None
+        resp = ig.create_open_position(**clean_kwargs)
+        body = resp.body if hasattr(resp, "body") else resp
+        deal_ref = body.get("dealReference") if isinstance(body, dict) else None
+
+        # prova a leggere la conferma — qui esce il REJECT reason “vero”
+        confirm_body = None
+        if deal_ref:
+            try:
+                confirm = ig.fetch_deal_by_deal_reference(deal_ref)
+                confirm_body = confirm.body if hasattr(confirm, "body") else confirm
+            except Exception:
+                confirm_body = None
+
         return {
             "status": "success",
             "status_code": getattr(resp, "status_code", None),
-            "dealReference": (body or {}).get("dealReference")
-            if isinstance(body, dict)
-            else None,
-            "raw": body if body is not None else str(resp),
+            "dealReference": deal_ref,
+            "raw": body,
+            "confirm": confirm_body,
         }
     except Exception as e:
-        return {"status": "error", "error": type(e).__name__, "reason": str(e)}
-
+        return {"status": "error", "error": e.__class__.__name__, "reason": str(e)}
 
 # ========= Utility =========
 def test_connection() -> Dict[str, Any]:
