@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import os
 import time
-import inspect
 from typing import Any, Dict, Optional
 
-from trading_ig import IGService
+from trading_ig import IGService  # pacchetto: trading-ig
 
 
 # ========= ENV =========
@@ -16,6 +15,7 @@ IG_API_KEY  = os.getenv("IG_API_KEY",  "").strip()
 IG_ACC_TYPE = os.getenv("IG_ACC_TYPE", "DEMO").strip().upper()  # DEMO | LIVE
 if IG_ACC_TYPE not in {"DEMO", "LIVE"}:
     IG_ACC_TYPE = "DEMO"
+
 
 # ========= IGService singleton + TTL login =========
 _IG: Optional[IGService] = None
@@ -45,7 +45,7 @@ def _ensure_ig() -> IGService:
         return _IG
     if now - _LAST_LOGIN_TS > _LOGIN_TTL_SEC:
         try:
-            _IG.fetch_accounts()   # keep-alive
+            _IG.fetch_accounts()  # keep-alive
             _LAST_LOGIN_TS = now
         except Exception:
             _IG = _new_ig()
@@ -74,7 +74,6 @@ def _to_bool(x: Any, default: bool = False) -> bool:
 
 
 def _confirm_by_ref(ig: IGService, deal_ref: Optional[str]) -> Dict[str, Any]:
-    """Tenta la conferma tramite dealReference (se presente)."""
     if not deal_ref:
         return {"ok": False, "error": "NoDealRef"}
     try:
@@ -88,20 +87,21 @@ def _confirm_by_ref(ig: IGService, deal_ref: Optional[str]) -> Dict[str, Any]:
 # ========= API principale =========
 def place_order(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Esegue OPEN / CLOSE_LONG / CLOSE_SHORT.
-    Costruisce gli argomenti in base alla *firma reale* della tua versione di trading-ig,
-    evitando mismatch “17/18/19 args”.
+    Esegue OPEN / CLOSE_LONG / CLOSE_SHORT su IG con chiamata keyword-first.
+    Fallback automatico su firme posizionali di trading-ig (A/B/C) se necessario.
+    Conferma sempre via dealReference.
     """
     ig = _ensure_ig()
 
     action     = (_get(data, "action", "OPEN") or "OPEN").upper()
     epic       = _get(data, "epic")
     if not epic:
-        return {"status": "error", "reason": "Missing 'epic'"}
+        return {"status": "error", "error": "MissingParam", "reason": "Missing 'epic'"}
 
-    direction  = _get(data, "direction")
+    direction  = _get(data, "direction")  # BUY | SELL (per OPEN)
     size       = float(_get(data, "size", 1))
     order_type = (_get(data, "order_type", "MARKET") or "MARKET").upper()
+    expiry     = _get(data, "expiry", "-")  # rolling per CFD
 
     # livelli/parametri opzionali
     level              = _get(data, "level")
@@ -116,9 +116,8 @@ def place_order(data: Dict[str, Any]) -> Dict[str, Any]:
     time_in_force      = _get(data, "time_in_force")
     good_till_date     = _get(data, "good_till_date")
     quote_id           = _get(data, "quote_id")
-    expiry             = _get(data, "expiry", "-")
 
-    # Normalizzazione CLOSE_* -> ordine opposto + force_open=False
+    # Normalizzazione CLOSE_* (ordine opposto + force_open=False)
     if action in {"CLOSE_LONG", "CLOSE_SHORT"}:
         direction = "SELL" if action == "CLOSE_LONG" else "BUY"
         force_open = False
@@ -127,69 +126,84 @@ def place_order(data: Dict[str, Any]) -> Dict[str, Any]:
     else:
         if not direction:
             return {"status": "error", "reason": "Missing 'direction' for OPEN"}
-        direction = direction.upper()
         force_open = _to_bool(_get(data, "force_open", True))
         if order_type == "LIMIT" and level is None:
             return {"status": "error", "reason": "For LIMIT orders, 'level' is required"}
 
-    # Dizionario “sorgente” con i nomi *nostri* normalizzati
-    avail = {
-        "epic": epic,
-        "expiry": expiry,
-        "direction": direction,
-        "size": size,
-        "level": level,
-        "order_type": order_type,
-        "time_in_force": time_in_force,
-        "limit_distance": limit_distance,
-        "limit_level": limit_level,
-        "stop_distance": stop_distance,
-        "stop_level": stop_level,
-        "guaranteed_stop": bool(guaranteed_stop),
-        "trailing_stop": bool(trailing_stop),
-        "trailing_stop_increment": trailing_increment,
-        "force_open": bool(force_open),
-        "currency_code": currency_code,
-        "good_till_date": good_till_date,
-        "quote_id": quote_id,
-    }
+    # ----- 0) TENTATIVO: chiamata con KEYWORD ARGUMENTS (robusta) -----
+    kw = dict(
+        epic=epic,
+        expiry=expiry,
+        direction=direction,
+        size=float(size),
+        level=level,
+        order_type=order_type,
+        time_in_force=time_in_force,
+        limit_distance=limit_distance,
+        limit_level=limit_level,
+        stop_distance=stop_distance,
+        stop_level=stop_level,
+        guaranteed_stop=bool(guaranteed_stop),
+        trailing_stop=bool(trailing_stop),
+        trailing_stop_increment=trailing_increment,
+        force_open=bool(force_open),
+        currency_code=currency_code,
+        good_till_date=good_till_date,
+        quote_id=quote_id,
+    )
 
-    # Possibili alias dei nomi param nelle varie versioni del client
-    name_map = {
-        "deal_direction": "direction",
-        "dealOrderType": "order_type",
-        "deal_order_type": "order_type",
-    }
+    ig_resp = None
+    last_error = None
 
-    # ===== Costruzione argomenti in base alla firma reale =====
-    sig = inspect.signature(IGService.create_open_position)
-    params = [p for p in list(sig.parameters.values())[1:]]  # skip 'self'
-
-    # Parametri posizionali nell’ordine esatto della firma
-    args_pos = []
-    for p in params:
-        pname = p.name
-        src_key = name_map.get(pname, pname)  # mappa eventuali alias
-        args_pos.append(avail.get(src_key, None))
-
-    # Prova posizionale
     try:
-        ig_resp = ig.create_open_position(*args_pos)
+        ig_resp = ig.create_open_position(**kw)
+    except TypeError as e:
+        # versioni vecchie non accettano kwargs: proveremo i fallback posizionali
+        last_error = str(e)
     except Exception as e:
-        # Fallback: keyword strettamente filtrate ai soli nomi presenti nella firma
-        try:
-            allowed = []
-            for p in params:
-                pname = p.name
-                src_key = name_map.get(pname, pname)
-                if src_key in avail and avail[src_key] is not None:
-                    allowed.append((pname, avail[src_key]))
-            ig_resp = ig.create_open_position(**dict(allowed))
-        except Exception as e2:
+        # errore “reale” lato IG (mercato chiuso, min size, ecc.)
+        return {"status": "error", "error": e.__class__.__name__, "reason": str(e), "sent": kw}
+
+    # ----- 1) Fallback posizionali se kwargs non supportati -----
+    if ig_resp is None:
+        # A) firma classica
+        args_A = [
+            epic, expiry, direction, float(size), level, order_type,
+            time_in_force, limit_distance, limit_level, stop_distance, stop_level,
+            bool(guaranteed_stop), bool(trailing_stop), trailing_increment,
+            bool(force_open), currency_code, quote_id
+        ]
+        # B) variante con order_type e direction invertiti
+        args_B = [
+            epic, expiry, order_type, float(size), level, direction,
+            time_in_force, limit_distance, limit_level, stop_distance, stop_level,
+            bool(guaranteed_stop), bool(trailing_stop), trailing_increment,
+            bool(force_open), currency_code, quote_id
+        ]
+        # C) come A ma con good_till_date prima di quote_id
+        args_C = [
+            epic, expiry, direction, float(size), level, order_type,
+            time_in_force, limit_distance, limit_level, stop_distance, stop_level,
+            bool(guaranteed_stop), bool(trailing_stop), trailing_increment,
+            bool(force_open), currency_code, good_till_date
+        ]
+
+        attempts = [("A", args_A), ("B", args_B), ("C", args_C)]
+
+        for tag, args in attempts:
+            try:
+                ig_resp = ig.create_open_position(*args)
+                break
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+        if ig_resp is None:
             return {
                 "status": "error",
                 "error": "CreateOpenPositionFailed",
-                "reason": f"{e} || {e2}",
+                "reason": last_error,
+                "sent": kw,
             }
 
     # ----- Conferma tramite dealReference -----
@@ -216,7 +230,6 @@ def place_order(data: Dict[str, Any]) -> Dict[str, Any]:
 
 # ========= Utility =========
 def test_connection() -> Dict[str, Any]:
-    """Verifica credenziali e sessione IG."""
     ig = _ensure_ig()
     try:
         accs = ig.fetch_accounts()
@@ -227,7 +240,6 @@ def test_connection() -> Dict[str, Any]:
 
 
 def list_markets(search: str) -> Dict[str, Any]:
-    """Ricerca mercati per stringa (utile per trovare l'EPIC)."""
     ig = _ensure_ig()
     try:
         res = ig.search_markets(search)
