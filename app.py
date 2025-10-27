@@ -1,64 +1,140 @@
-biagiobonasera@MacBook-Pro-di-Biagio trading_automation_project % curl -sS -X POST https://ig-tv-wbhook.onrender.com/webhook \
-  -H 'Content-Type: application/json' \
-  -H 'X-Webhook-Secret: tv_ig_2025_secret!' \
-  -d '{
-    "action":"OPEN",
-    "epic":"CS.D.GBPCHF.CFD.IP",
-    "direction":"BUY",
-    "size":1,
-    "order_type":"MARKET",
-    "currency_code":"EUR"
-  }' | jq
-{
-  "response": {
-    "confirm": {
-      "affectedDeals": [],
-      "date": "2025-10-27T08:06:30.188",
-      "dealId": "DIAAAAVGZED9SAK",
-      "dealReference": "TBH4TM4YJKAT28R",
-      "dealStatus": "REJECTED",
-      "direction": "BUY",
-      "epic": "CS.D.GBPCHF.CFD.IP",
-      "expiry": null,
-      "guaranteedStop": false,
-      "level": null,
-      "limitDistance": null,
-      "limitLevel": null,
-      "profit": null,
-      "profitCurrency": null,
-      "reason": "UNKNOWN",
-      "size": null,
-      "status": null,
-      "stopDistance": null,
-      "stopLevel": null,
-      "trailingStop": false
-    },
-    "dealReference": "TBH4TM4YJKAT28R",
-    "raw": {
-      "affectedDeals": [],
-      "date": "2025-10-27T08:06:30.188",
-      "dealId": "DIAAAAVGZED9SAK",
-      "dealReference": "TBH4TM4YJKAT28R",
-      "dealStatus": "REJECTED",
-      "direction": "BUY",
-      "epic": "CS.D.GBPCHF.CFD.IP",
-      "expiry": null,
-      "guaranteedStop": false,
-      "level": null,
-      "limitDistance": null,
-      "limitLevel": null,
-      "profit": null,
-      "profitCurrency": null,
-      "reason": "UNKNOWN",
-      "size": null,
-      "status": null,
-      "stopDistance": null,
-      "stopLevel": null,
-      "trailingStop": false
-    },
-    "status": "success",
-    "status_code": null
-  },
-  "status": "success"
-}
-biagiobonasera@MacBook-Pro-di-Biagio trading_automation_project % 
+from __future__ import annotations
+import os
+import traceback
+from flask import Flask, request, jsonify
+from ig_trading import place_order, test_connection, list_markets, _ensure_ig
+
+app = Flask(__name__)
+
+# ==========================
+# Config / Secret
+# ==========================
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "tv_ig_2025_secret!")
+
+# ==========================
+# Root
+# ==========================
+@app.route("/")
+def home():
+    return jsonify({
+        "status": "ok",
+        "message": "IG Trading Webhook is running 🚀"
+    })
+
+
+# ==========================
+# MAIN WEBHOOK
+# ==========================
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    try:
+        # verifica secret
+        secret = request.headers.get("X-Webhook-Secret", "")
+        if secret != WEBHOOK_SECRET:
+            return jsonify({"status": "forbidden"}), 403
+
+        data = request.get_json(force=True)
+        if not data:
+            return jsonify({"status": "error", "reason": "No JSON payload"}), 400
+
+        resp = place_order(data)
+        return jsonify({"status": "success", "response": resp})
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "exc": e.__class__.__name__,
+            "reason": str(e),
+            "trace": traceback.format_exc(),
+        }), 500
+
+
+# ==========================
+# TEST IG CONNECTION
+# ==========================
+@app.route("/test_ig", methods=["GET"])
+def test_ig():
+    try:
+        secret = request.headers.get("X-Webhook-Secret", "")
+        if secret != WEBHOOK_SECRET:
+            return jsonify({"status": "forbidden"}), 403
+
+        result = test_connection()
+        if not result.get("ok"):
+            return jsonify({
+                "status": "error",
+                "exc": "IGException",
+                "message": "test_ig failed",
+                "trace": result.get("error", "unknown")
+            }), 500
+        return jsonify({"status": "success", "response": result})
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "exc": e.__class__.__name__,
+            "message": str(e),
+            "trace": traceback.format_exc(),
+        }), 500
+
+
+# ==========================
+# LIST MARKETS (search)
+# ==========================
+@app.route("/markets", methods=["GET"])
+def markets():
+    try:
+        secret = request.headers.get("X-Webhook-Secret", "")
+        if secret != WEBHOOK_SECRET:
+            return jsonify({"status": "forbidden"}), 403
+
+        search = request.args.get("search", "")
+        if not search:
+            return jsonify({"status": "error", "message": "missing search"}), 400
+
+        result = list_markets(search)
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "exc": e.__class__.__name__,
+            "message": "markets failed",
+            "trace": traceback.format_exc(),
+        }), 500
+
+
+# ==========================
+# MARKET DETAILS (EPIC info)
+# ==========================
+@app.route("/market_details", methods=["GET"])
+def market_details():
+    try:
+        secret = request.headers.get("X-Webhook-Secret", "")
+        if secret != WEBHOOK_SECRET:
+            return jsonify({"status": "forbidden"}), 403
+
+        epic = request.args.get("epic")
+        if not epic:
+            return jsonify({"status": "error", "message": "missing epic"}), 400
+
+        ig = _ensure_ig()
+        details = ig.fetch_market_by_epic(epic)
+        body = details.body if hasattr(details, "body") else details
+        return jsonify({"status": "success", "details": body})
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "exc": e.__class__.__name__,
+            "reason": str(e),
+            "trace": traceback.format_exc(),
+        }), 500
+
+
+# ==========================
+# Entry point
+# ==========================
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
