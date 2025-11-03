@@ -28,15 +28,17 @@ def home():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        # verifica secret
-        secret = request.headers.get("X-Webhook-Secret", "")
-        if secret != WEBHOOK_SECRET:
-            return jsonify({"status": "forbidden"}), 403
-
+        # Legge il JSON dal body
         data = request.get_json(force=True)
         if not data:
             return jsonify({"status": "error", "reason": "No JSON payload"}), 400
 
+        # Verifica il secret dal body
+        secret = data.get("secret", "")
+        if secret != WEBHOOK_SECRET:
+            return jsonify({"status": "forbidden"}), 403
+
+        # Invio ordine IG
         resp = place_order(data)
         return jsonify({"status": "success", "response": resp})
 
@@ -50,12 +52,25 @@ def webhook():
 
 
 # ==========================
+# DEBUG ENDPOINT
+# ==========================
+@app.route("/debug", methods=["POST"])
+def debug():
+    data = request.get_json(force=True)
+    return jsonify({
+        "env_secret": WEBHOOK_SECRET,
+        "body_secret": data.get("secret", ""),
+        "full_body": data
+    })
+
+
+# ==========================
 # TEST IG CONNECTION
 # ==========================
 @app.route("/test_ig", methods=["GET"])
 def test_ig():
     try:
-        secret = request.headers.get("X-Webhook-Secret", "")
+        secret = request.args.get("secret", "")
         if secret != WEBHOOK_SECRET:
             return jsonify({"status": "forbidden"}), 403
 
@@ -84,7 +99,7 @@ def test_ig():
 @app.route("/markets", methods=["GET"])
 def markets():
     try:
-        secret = request.headers.get("X-Webhook-Secret", "")
+        secret = request.args.get("secret", "")
         if secret != WEBHOOK_SECRET:
             return jsonify({"status": "forbidden"}), 403
 
@@ -110,7 +125,7 @@ def markets():
 @app.route("/market_details", methods=["GET"])
 def market_details():
     try:
-        secret = request.headers.get("X-Webhook-Secret", "")
+        secret = request.args.get("secret", "")
         if secret != WEBHOOK_SECRET:
             return jsonify({"status": "forbidden"}), 403
 
