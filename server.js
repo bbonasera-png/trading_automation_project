@@ -7,7 +7,7 @@ app.use(bodyParser.json());
 
 // === CONFIGURAZIONE ===
 const IG_API_KEY = 'f238c03996ba52d15d291ee0bdfff82099511429';
-const IG_USERNAME = 'biagiob@icloud.com';
+const IG_USERNAME = 'biagiobonasera';
 const IG_PASSWORD = 'P1x3y013579??';
 const EXPECTED_SECRET = 'tv_ig_2025_secret!';
 
