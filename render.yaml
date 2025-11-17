@@ -1,20 +1,8 @@
 services:
   - type: web
     name: ig-tv-wbhook
-    env: python
-    plan: free  # oppure starter, se vuoi maggiore uptime
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.9
-      - key: WEBHOOK_SECRET
-        value: tv_ig_2025_secret!
-      - key: IG_API_KEY
-        sync: false
-      - key: IG_IDENTIFIER
-        sync: false
-      - key: IG_PASSWORD
-        sync: false
-      - key: IG_ACCOUNT_ID
-        sync: false
+    env: node
+    buildCommand: npm install
+    startCommand: node server.js
+    plan: free
+    autoDeploy: true
