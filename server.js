@@ -89,12 +89,14 @@ async function sendOrderToIG(order) {
 app.post('/webhook', async (req, res) => {
   const payload = req.body;
 
+  console.log('📩 Payload ricevuto:', JSON.stringify(payload)); // AGGIUNGI QUESTO
+
   if (payload.secret !== EXPECTED_SECRET) {
     console.log('❌ Secret non valido:', payload.secret);
     return res.status(403).send('Forbidden');
   }
 
-  console.log('✅ Webhook ricevuto:', JSON.stringify(payload));
+  console.log('✅ Webhook autorizzato, procedo con ordine IG...');
 
   let igOrder = {
     epic: payload.epic,
@@ -104,13 +106,16 @@ app.post('/webhook', async (req, res) => {
     orderType: payload.orderType,
     guaranteedStop: false,
     currencyCode: payload.currencyCode,
-    forceOpen: true
+    forceOpen: true,
+    level: payload.entry,
+    limitLevel: payload.tp,
+    stopLevel: payload.sl
   };
 
   const result = await sendOrderToIG(igOrder);
-  res.json(result); // restituisce SEMPRE la risposta completa di IG
+  console.log('📤 Risposta IG:', result); // AGGIUNGI QUESTO
+  res.json(result);
 });
-
 // === AVVIO SERVER ===
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
